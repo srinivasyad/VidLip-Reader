@@ -1,0 +1,15 @@
+# Deep Learning Framework
+tensorflow
+
+# Web App Framework
+streamlit
+
+# Video Processing
+opencv-python
+
+# Numerical Computation
+numpy
+
+# Translation Libraries
+googletrans==4.0.0-rc1
+deep-translator
