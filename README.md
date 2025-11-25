@@ -60,8 +60,6 @@ Export reports as .txt
 Download prediction & translation audio
 
 Auto-generate email draft for sharing
-
-📂 Project Structure
 ├── full_app_with_password_reset.py   # Main Streamlit application
 ├── models/                           # Place .h5 / .keras models here
 ├── uploaded_videos/                  # User uploaded videos
@@ -73,6 +71,7 @@ Auto-generate email draft for sharing
 ├── remember.json                     # Remember-me storage
 ├── reset_tokens.json                 # Password reset tokens
 └── requirements.txt                  # Dependencies
+
 
 🛠️ Installation
 1️⃣ Clone the repository
