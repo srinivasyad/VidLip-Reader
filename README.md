@@ -61,18 +61,6 @@ Download prediction & translation audio
 <img width="735" height="342" alt="image" src="https://github.com/user-attachments/assets/169d715c-8558-4dee-aeb7-a3f1903ac112" />
 
 Auto-generate email draft for sharing
-├── full_app_with_password_reset.py   # Main Streamlit application
-├── models/                           # Place .h5 / .keras models here
-├── uploaded_videos/                  # User uploaded videos
-├── utils/
-│   ├── preprocessing.py              # Video preprocessing logic
-│   ├── translations.py               # Offline dictionary
-│   └── translations_custom.json      # User-added words
-├── users.json                        # User database
-├── remember.json                     # Remember-me storage
-├── reset_tokens.json                 # Password reset tokens
-└── requirements.txt                  # Dependencies
-
 
 🛠️ Installation
 1️⃣ Clone the repository
