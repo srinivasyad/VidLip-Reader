@@ -70,19 +70,6 @@ cd VidLip-Reader
 2️⃣ Install dependencies
 pip install -r requirements.txt
 
-3️⃣ Install system dependencies (Important)
-
-Required for video processing & emotion detection.
-
-Windows
-
-Install FFmpeg → https://ffmpeg.org/download.html
-
-Add FFmpeg to PATH
-
-Linux
-sudo apt install ffmpeg libsm6 libxext6
-
 ▶️ Run the App
 streamlit run full_app_with_password_reset.py
 
