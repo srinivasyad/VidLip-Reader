@@ -1,15 +1,26 @@
-# Deep Learning Framework
-tensorflow
+# Core runtime
+streamlit>=1.20.0
 
-# Web App Framework
-streamlit
+# Video / image processing and numeric
+opencv-python>=4.7.0
+numpy>=1.23.0
+Pillow>=9.0.0
 
-# Video Processing
-opencv-python
+# Machine learning / model loading
+tensorflow>=2.10.0
+h5py>=3.1.0
 
-# Numerical Computation
-numpy
+# Optional features used in the app
+gTTS>=2.3.0            # Text-to-speech (optional)
+fer>=21.0.0            # Facial Emotion Recognition (optional; requires additional native libs)
+bcrypt>=4.0.0          # Secure password hashing (optional — fallback to sha256 if absent)
+googletrans==4.0.0-rc1 # Online translation fallback (optional)
 
-# Translation Libraries
-googletrans==4.0.0-rc1
-deep-translator
+# Utilities / niceties
+python-dotenv>=1.0.0   # load environment variables conveniently
+matplotlib>=3.5.0      # for plotting if needed
+
+# Notes:
+# - smtplib and email are part of Python standard library; no pip install required.
+# - Some features (video codecs, ffmpeg) require system packages (see below).
+# - Pin versions if you need exact reproducibility.
