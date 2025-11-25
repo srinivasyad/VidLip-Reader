@@ -64,7 +64,7 @@ Auto-generate email draft for sharing
 
 🛠️ Installation
 1️⃣ Clone the repository
-git clone https://github.com/yourusername/VidLip-Reader.git
+git clone https://github.com/srinivasyad/VidLip-Reader.git
 cd VidLip-Reader
 
 2️⃣ Install dependencies
