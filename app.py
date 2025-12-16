@@ -1,4 +1,3 @@
-# full_app_with_password_reset.py
 import streamlit as st
 import cv2
 import numpy as np
@@ -20,11 +19,18 @@ from datetime import datetime, date, timedelta
 import shutil
 import secrets
 import zipfile
-import smtplib
 from email.message import EmailMessage
+import logging
 
 from utils import translations as translations_mod
 from utils.translations import get_translation, AVAILABLE_LANGS
+
+# Optional: load .env in dev if present
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
 
 # --- Optional: bcrypt for secure password hashing ---
 BCRYPT_AVAILABLE = False
@@ -45,22 +51,13 @@ except Exception as e:
     import traceback
     TTS_IMPORT_ERROR = "".join(traceback.format_exception_only(type(e), e)).strip()
 
-# NEW: emotion libs (optional - will handle if not installed)
-FER_AVAILABLE = False
-FER_IMPORT_ERROR = None
-
-try:
-    from fer import FER
-    from collections import Counter
-    FER_AVAILABLE = True
-except Exception as e:
-    FER_AVAILABLE = False
-    import traceback
-    FER_IMPORT_ERROR = "".join(traceback.format_exception_only(type(e), e)).strip()
-    FER_IMPORT_TRACEBACK = "".join(traceback.format_exc())
-
 # ------------------ Paths & setup ------------------
 ROOT = Path(__file__).parent
+
+# logging should reference ROOT AFTER it's defined
+LOGFILE = ROOT / "app.log"
+logging.basicConfig(filename=str(LOGFILE), level=logging.INFO)
+
 MODELS_DIR = ROOT / "models"
 UPLOADED_VIDEO_DIR = ROOT / "uploaded_videos"
 USERS_FILE = ROOT / "users.json"
@@ -255,19 +252,27 @@ def save_custom_translation(english_text: str, language_name: str, translation_t
         return False
 
 def try_online_translate(text: str, target_lang: str):
+    """
+    Online translation using deep-translator (Google backend).
+    Returns translated text on success, or a string starting with "__ERR__:" on failure.
+    """
     try:
-        from googletrans import Translator
-    except Exception:
-        return None
+        from deep_translator import GoogleTranslator
+    except Exception as e:
+        logging.error(f"deep-translator import failed: {e}")
+        return "__ERR__: deep-translator import failed: " + str(e)
+
+    code = AVAILABLE_LANGS.get(target_lang)
+    if not code:
+        return "__ERR__: Invalid language code for: " + str(target_lang)
+
     try:
-        t = Translator()
-        code = AVAILABLE_LANGS.get(target_lang)
-        if not code:
-            return None
-        res = t.translate(text, dest=code)
-        return res.text
-    except Exception:
-        return None
+        # GoogleTranslator will perform network request to Google Translate (no official API key)
+        translated = GoogleTranslator(source='auto', target=code).translate(text)
+        return translated
+    except Exception as e:
+        logging.exception("deep-translator translation failed")
+        return "__ERR__: " + str(e)
 
 # ------------------ Models & prediction ------------------
 def discover_models():
@@ -340,71 +345,9 @@ def text_to_speech_bytes(text: str, lang_code: str = "en") -> Optional[bytes]:
     except Exception:
         return None
 
-# ------------------ Emotion detection helpers (FER) ------------------
-if FER_AVAILABLE:
-    @st.cache_resource
-    def get_emotion_detector():
-        return FER(mtcnn=True)
-
-    def extract_frames_from_video(video_path, max_frames=16, resize_w=224):
-        cap = cv2.VideoCapture(video_path)
-        frames = []
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
-        if total <= 0:
-            cap.release()
-            return frames
-        step = max(1, total // max_frames)
-        idx = 0
-        grabbed = 0
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            if idx % step == 0:
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                if resize_w:
-                    h, w = frame_rgb.shape[:2]
-                    scale = resize_w / max(1, w)
-                    frame_rgb = cv2.resize(frame_rgb, (resize_w, int(h*scale)))
-                frames.append(frame_rgb)
-                grabbed += 1
-                if grabbed >= max_frames:
-                    break
-            idx += 1
-        cap.release()
-        return frames
-
-    def predict_emotion_from_video(video_path, max_frames=16):
-        detector = get_emotion_detector()
-        frames = extract_frames_from_video(video_path, max_frames=max_frames, resize_w=224)
-        if not frames:
-            return ("Unknown", 0.0)
-        frame_emotions = []
-        frame_scores = []
-        for f in frames:
-            try:
-                res = detector.detect_emotions(f)
-                if res and len(res) > 0:
-                    face = res[0]
-                    emotions = face.get("emotions", {})
-                    if emotions:
-                        emot = max(emotions, key=lambda k: emotions[k])
-                        score = emotions[emot]
-                        frame_emotions.append(emot)
-                        frame_scores.append(score)
-            except Exception:
-                continue
-        if not frame_emotions:
-            return ("Unknown", 0.0)
-        from collections import Counter
-        counter = Counter(frame_emotions)
-        top = counter.most_common(1)[0][0]
-        scores_for_top = [s for e, s in zip(frame_emotions, frame_scores) if e == top]
-        conf = float(sum(scores_for_top) / max(1, len(scores_for_top)))
-        return (top, conf)
-else:
-    def predict_emotion_from_video(video_path, max_frames=16):
-        return ("FER not installed", 0.0)
+# ------------------ Note: Emotion detection removed ------------------
+# All FER-related code and UI bits were removed to avoid import errors and runtime issues.
+# If you want to re-enable emotion detection later, re-add the fer import and associated helpers.
 
 # ---------- Streamlit setup & session ----------
 st.set_page_config(page_title="LipRead Pro", layout="wide", initial_sidebar_state="expanded", page_icon="")
@@ -426,8 +369,7 @@ if "_last_prediction" not in st.session_state:
     st.session_state["_last_prediction"] = ""
 if "_last_translation" not in st.session_state:
     st.session_state["_last_translation"] = ""
-if "_last_emotion" not in st.session_state:
-    st.session_state["_last_emotion"] = ""
+# emotion removed; do NOT set _last_emotion
 if "_admin_action_confirm" not in st.session_state:
     st.session_state["_admin_action_confirm"] = {}
 if "pending_password_change_user" not in st.session_state:
@@ -453,7 +395,7 @@ def clear_prediction():
     st.session_state["_prediction_done"] = False
     st.session_state["_last_prediction"] = ""
     st.session_state["_last_translation"] = ""
-    st.session_state["_last_emotion"] = ""
+    # emotion removed - do not touch _last_emotion
     st.session_state["_tts_pred_bytes"] = None
     st.session_state["_tts_trans_bytes"] = None
     st.session_state["_tts_manual_bytes"] = None
@@ -482,7 +424,58 @@ def admin_set_user_flag(username: str, flag: str, value):
         return True
     return False
 
-# ------------------ Password reset functions ------------------
+# ------------------ Admin-requested password reset helpers ------------------
+def request_admin_reset(username: str):
+    """
+    Mark a username as requesting an admin reset. Returns True if request recorded.
+    """
+    users = load_users()
+    if username not in users:
+        return False
+    if isinstance(users[username], str):
+        users[username] = {"password": users[username]}
+    users[username]["admin_reset_requested"] = True
+    save_users(users)
+    return True
+
+def clear_admin_reset_request(username: str):
+    users = load_users()
+    if username in users and isinstance(users[username], dict):
+        users[username].pop("admin_reset_requested", None)
+        save_users(users)
+
+def get_admin_reset_requests():
+    """
+    Return list of usernames which have admin_reset_requested == True
+    """
+    users = load_users()
+    reqs = []
+    for uname, u in users.items():
+        if isinstance(u, dict) and u.get("admin_reset_requested"):
+            reqs.append(uname)
+    return reqs
+
+def admin_reset_user_with_temp_password(username: str, temp_pw: str = None):
+    """
+    Admin-triggered reset: sets a temporary password (generated if not provided),
+    sets must_change_password True, clears the request flag, and saves users.
+    Returns (ok: bool, temp_password_or_msg).
+    """
+    users = load_users()
+    if username not in users:
+        return False, "User not found"
+    pw = temp_pw or secrets.token_urlsafe(10)
+    ok = reset_user_password(username, pw, set_must_change=True)
+    if not ok:
+        return False, "Failed to reset password"
+    # clear request flag (reload users to be safe)
+    users = load_users()
+    if username in users and isinstance(users[username], dict):
+        users[username].pop("admin_reset_requested", None)
+        save_users(users)
+    return True, pw
+
+# ------------------ Password reset functions ------------------ 
 def generate_reset_token(length=24):
     return secrets.token_urlsafe(length)
 
@@ -495,6 +488,13 @@ def create_password_reset_token(username: str, expire_minutes: int = 20):
     expires_at = (datetime.now() + timedelta(minutes=expire_minutes)).isoformat()
     tokens[token] = {"username": username, "expires_at": expires_at}
     _save_reset_tokens(tokens)
+    # Also append to fallback for easy dev visibility (non-sensitive dev use)
+    try:
+        fallback_path = ROOT / "reset_tokens_fallback.txt"
+        with open(fallback_path, "a", encoding="utf-8") as fh:
+            fh.write(f"{datetime.now().isoformat()} TO:{username} TOKEN:{token}\n")
+    except Exception:
+        pass
     return token
 
 def verify_and_consume_token(token: str):
@@ -528,139 +528,318 @@ def reset_user_password(username: str, new_password: str, set_must_change=False)
     save_users(users)
     return True
 
-# ------------------ SMTP helper (optional) ------------------
-SMTP_CONFIG = {
-    "host": os.getenv("SMTP_HOST", ""),
-    "port": int(os.getenv("SMTP_PORT", "587") or 587),
-    "user": os.getenv("SMTP_USER", ""),
-    "pass": os.getenv("SMTP_PASS", ""),
-    "use_tls": os.getenv("SMTP_TLS", "True").lower() in ("true", "1", "yes")
-}
+# ------------------ UI STYLES (auto-switch for light/dark) ------------------
+# Replace previous CSS block with this conditional block to ensure text is visible in light mode.
+# It detects Streamlit's theme base and applies a light-friendly palette when appropriate.
 
-def send_reset_email(to_email: str, token: str):
-    if not SMTP_CONFIG["host"] or not SMTP_CONFIG["user"] or not SMTP_CONFIG["pass"]:
-        return False, "SMTP not configured"
-    try:
-        msg = EmailMessage()
-        msg["Subject"] = "LipRead Pro — Password reset token"
-        msg["From"] = SMTP_CONFIG["user"]
-        msg["To"] = to_email
-        body = f"Use this token to reset your LipRead Pro password (valid for 20 minutes):\n\n{token}\n\nIf you did not request this, ignore."
-        msg.set_content(body)
-        s = smtplib.SMTP(SMTP_CONFIG["host"], SMTP_CONFIG["port"], timeout=10)
-        if SMTP_CONFIG["use_tls"]:
-            s.starttls()
-        s.login(SMTP_CONFIG["user"], SMTP_CONFIG["pass"])
-        s.send_message(msg)
-        s.quit()
-        return True, "Sent"
-    except Exception as e:
-        return False, str(e)
+# Try to read Streamlit theme base (falls back to 'dark' if unavailable)
+try:
+    theme_base = st.get_option("theme.base")  # 'light' or 'dark'
+except Exception:
+    theme_base = "dark"
 
-# ------------------ UI STYLES ------------------
-st.markdown(
-    """
+if theme_base == "light":
+    # Light-mode CSS
+# ---------- Replace only the light-mode CSS string with this block ----------
+    css = """
     <style>
-      @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;600;700&display=swap');
-      
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap');
+
+    :root{
+        --bg: #FFFFFF;
+        --surface: #F7FAFC;
+        --card: #FFFFFF;
+        --accent: #0ea5a4;      /* teal */
+        --accent-2: #6366F1;    /* indigo */
+        --muted: #475569;       /* darker muted text for readability */
+        --text: #071428;        /* very dark text for high contrast */
+        --border: rgba(7,20,40,0.08);
+        --glass: rgba(7,20,40,0.03);
+    }
+
+    html, body, [class*="css"] {
+        font-family: 'Inter', system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+        color: var(--text);
+        background: linear-gradient(180deg, var(--surface), #F1F5F9 140%);
+    }
+
+    .main > div.block-container {
+        padding-top: 28px;
+        padding-bottom: 28px;
+    }
+
+    /* Buttons - clearer, higher contrast */
+    .stButton>button {
+        border-radius: 10px;
+        font-weight: 600;
+        padding: 10px 14px;
+        border: 1px solid var(--border);
+        background: linear-gradient(90deg, rgba(7,20,40,0.02), rgba(7,20,40,0.01));
+        color: var(--text);
+        box-shadow: none;
+    }
+    .stButton>button[type="primary"] {
+        background: linear-gradient(90deg, var(--accent), var(--accent-2));
+        color: white;
+        border: none;
+        box-shadow: 0 6px 18px rgba(6,182,212,0.08);
+    }
+    /* Disabled buttons - visibly disabled but legible */
+    .stButton>button:disabled {
+        background: #f3f4f6;
+        color: #9ca3af;
+        border: 1px solid rgba(7,20,40,0.04);
+        box-shadow: none;
+    }
+
+    /* Input fields - darker placeholder and text */
+    .stTextInput>div>div>input,
+    .stTextArea>div>div>textarea,
+    .stDateInput>div>div>input {
+        background: #ffffff;
+        border: 1px solid var(--border);
+        color: var(--text);
+        padding: 10px 12px;
+        border-radius: 8px;
+    }
+    .stTextInput>div>div>input::placeholder,
+    .stTextArea>div>div>textarea::placeholder {
+        color: #94a3b8;
+    }
+
+    /* File uploader - make card clear and text readable */
+    div[data-testid="stFileUploader"] {
+        border-radius: 12px;
+        background: linear-gradient(180deg, rgba(7,20,40,0.02), rgba(7,20,40,0.00));
+        padding: 14px;
+        border: 1px dashed rgba(7,20,40,0.06);
+    }
+    div[data-testid="stFileUploader"] small,
+    div[data-testid="stFileUploader"] span,
+    div[data-testid="stFileUploader"] p {
+        color: var(--muted);
+    }
+
+    /* Header and brand */
+    .app-header {
+        display:flex; align-items:center; gap:18px;
+        padding:18px 22px; border-radius:12px;
+        background: linear-gradient(90deg, rgba(7,20,40,0.02), rgba(7,20,40,0.01));
+        border: 1px solid var(--border);
+        margin-bottom: 22px;
+    }
+    .app-title { font-weight:800; font-size:20px; color:var(--text); letter-spacing: -0.3px; }
+    .app-sub { color:var(--muted); font-size:13px; font-weight:400; }
+
+    .brand-icon {
+        width:48px; height:48px; border-radius:12px;
+        display:flex; align-items:center; justify-content:center;
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        color: white; font-weight:800; font-size:20px;
+        box-shadow: 0 6px 12px rgba(99,102,241,0.06);
+    }
+
+    /* Cards & Containers - remove heavy blur and keep crisp borders */
+    .content-card {
+        background: linear-gradient(180deg, var(--card), var(--surface));
+        border: 1px solid var(--border);
+        padding: 22px; border-radius:12px;
+        box-shadow: 0 2px 8px rgba(7,20,40,0.04);
+        margin-bottom: 16px;
+    }
+
+    /* Sidebar: make menu items clearly visible */
+    .sidebar-profile-box {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 14px;
+        text-align: center;
+        margin-bottom: 15px;
+        background: linear-gradient(180deg, rgba(255,255,255,0.9), rgba(255,255,255,0.95));
+    }
+    /* Streamlit renders sidebar buttons as normal buttons — ensure contrast in sidebar */
+    .stSidebar .stButton>button {
+        width:100%;
+        text-align:left;
+        padding:14px 18px;
+        background: #ffffff;
+        color: var(--text);
+        border: 1px solid rgba(7,20,40,0.06);
+        box-shadow: 0 6px 18px rgba(7,20,40,0.03);
+    }
+    .stSidebar .stButton>button[type="primary"] {
+        background: linear-gradient(90deg, var(--accent), var(--accent-2));
+        color: white;
+        border: none;
+    }
+
+    /* Login card - lighter, clearer */
+    .login-container { max-width: 640px; margin: auto; padding-top: 28px; }
+    .auth-card {
+        background: #ffffff;
+        padding: 28px;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        box-shadow: 0 8px 32px rgba(7,20,40,0.04);
+    }
+
+    /* Tabs & small text */
+    .stTabs [role="tab"] { color: var(--muted); font-weight:600; }
+    .stTabs [role="tab"][aria-selected="true"] { color: var(--text); }
+
+    .stMarkdown p, .stMarkdown span, .stText {
+        color: var(--muted);
+    }
+    .st-header { color: var(--text); }
+
+    /* Ensure form labels and small controls are readable */
+    label, .stLabel, .css-1v0mbdj, .css-1xt0b0l {
+        color: var(--text) !important;
+    }
+
+    /* Dataframe header & text readability */
+    .stDataFrame table th { color: var(--text); }
+    .stDataFrame table td { color: var(--text); }
+
+    /* Make small helper links visible */
+    a, .stLink { color: var(--accent-2); text-decoration: none; }
+
+    </style>
+    """
+
+else:
+    # Original Dark-mode CSS (keeps behaviour you had before)
+    css = """
+    <style>
+      /* -------------------------------------------------
+         New visual theme: 'Calm Teal' — clean, higher contrast,
+         larger spacing, clearer buttons and compact cards.
+         Only affects styling — no code logic changed.
+         ------------------------------------------------- */
+
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap');
+
       :root{
-        --bg: #F8FAFC;
-        --surface: #FFFFFF;
-        --primary: #2563EB;
-        --primary-hover: #1D4ED8;
-        --text-dark: #0F172A;
-        --text-grey: #64748B;
-        --border: #E2E8F0;
-      }
-      
-      html, body, [class*="css"] {
-        font-family: 'Plus Jakarta Sans', sans-serif;
-        color: var(--text-dark);
+        --bg: #0F172A;          /* deep slate background for app chrome */
+        --surface: #0B1220;     /* slightly lighter panel */
+        --card: #071022;        /* card background */
+        --accent: #06B6D4;      /* teal-cyan accent */
+        --accent-2: #7C3AED;    /* secondary purple accent for highlights */
+        --muted: #94A3B8;       /* muted text */
+        --text: #E6EEF6;        /* primary text */
+        --border: rgba(255,255,255,0.06);
+        --glass: rgba(255,255,255,0.02);
       }
 
-      /* Streamlit Overrides */
+      html, body, [class*="css"] {
+        font-family: 'Inter', system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+        color: var(--text);
+        background: linear-gradient(180deg, var(--bg), #061725 140%);
+      }
+
+      .main > div.block-container {
+        padding-top: 28px;
+        padding-bottom: 28px;
+      }
+
       .stButton>button {
-        border-radius: 8px;
-        font-weight: 600;
+        border-radius: 10px;
+        font-weight: 650;
+        padding: 10px 14px;
         border: 1px solid var(--border);
-        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        background: linear-gradient(90deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+        color: var(--text);
+        box-shadow: 0 6px 18px rgba(3,7,18,0.6);
       }
       .stButton>button[type="primary"] {
-        background-color: var(--primary);
+        background: linear-gradient(90deg, var(--accent), var(--accent-2));
         color: white;
         border: none;
       }
       .stButton>button[type="primary"]:hover {
-        background-color: var(--primary-hover);
-      }
-      
-      /* FIXING FILE UPLOADER EMPTY SPACE:
-         Targeting the internal Streamlit markdown containers slightly */
-      div[data-testid="stFileUploader"] {
-          margin-top: -10px;
-      }
-      
-      /* Header Styling */
-      .app-header {
-        display:flex; align-items:center; gap:16px;
-        padding:18px 24px; border-radius:12px;
-        background: var(--surface);
-        border: 1px solid var(--border);
-        box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
-        margin-bottom: 30px;
-      }
-      .app-title { font-weight:700; font-size:22px; color:var(--text-dark); letter-spacing: -0.5px; }
-      .app-sub { color:var(--text-grey); font-size:14px; font-weight:400; }
-      
-      .brand-icon {
-        font-size: 24px; width: 42px; height: 42px;
-        display:flex; align-items:center; justify-content:center;
-        background: linear-gradient(135deg, var(--primary), #60A5FA);
-        color: white; border-radius:10px; box-shadow: 0 4px 10px rgba(37, 99, 235, 0.2);
+        transform: translateY(-1px);
+        box-shadow: 0 10px 24px rgba(6,182,212,0.12);
       }
 
-      /* Cards & Containers */
-      .content-card {
-        background: var(--surface);
+      .stTextInput>div>div>input, .stTextArea>div>div>textarea, .stDateInput>div>div>input {
+        background: rgba(255,255,255,0.02);
         border: 1px solid var(--border);
-        padding: 24px; border-radius:16px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.02);
-        margin-bottom: 20px;
+        color: var(--text);
+        padding: 10px 12px;
+        border-radius: 8px;
       }
-      
+
+      div[data-testid="stFileUploader"] {
+        border-radius: 12px;
+        background: linear-gradient(180deg, rgba(255,255,255,0.01), transparent);
+        padding: 14px;
+        border: 1px dashed rgba(255,255,255,0.04);
+      }
+
+      .app-header {
+        display:flex; align-items:center; gap:18px;
+        padding:18px 22px; border-radius:12px;
+        background: linear-gradient(90deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+        border: 1px solid var(--border);
+        margin-bottom: 22px;
+      }
+      .app-title { font-weight:800; font-size:20px; color:var(--text); letter-spacing: -0.3px; }
+      .app-sub { color:var(--muted); font-size:13px; font-weight:400; }
+
+      .brand-icon {
+        width:48px; height:48px; border-radius:12px;
+        display:flex; align-items:center; justify-content:center;
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        color: white; font-weight:800; font-size:20px;
+        box-shadow: 0 8px 30px rgba(12,18,30,0.6);
+      }
+
+      .content-card {
+        background: linear-gradient(180deg, var(--card), var(--surface));
+        border: 1px solid var(--border);
+        padding: 22px; border-radius:14px;
+        box-shadow: 0 6px 18px rgba(2,6,12,0.6);
+        margin-bottom: 18px;
+      }
+
       .upload-zone {
-        border: 2px dashed var(--border);
-        background: #F9FAFB;
-        padding: 10px 20px 20px 20px; /* Reduced top padding */
+        border: 1px dashed rgba(255,255,255,0.04);
+        background: linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.00));
+        padding: 12px 18px 18px 18px;
         border-radius:12px; text-align:center;
-        transition: all 0.2s;
       }
-      .upload-zone:hover { border-color: var(--primary); background: #F0F9FF; }
+      .upload-zone:hover { border-color: rgba(255,255,255,0.08); }
 
       .sidebar-profile-box {
           border: 1px solid var(--border);
           border-radius: 12px;
-          padding: 15px;
+          padding: 14px;
           text-align: center;
           margin-bottom: 15px;
-          background: white;
+          background: linear-gradient(180deg, rgba(255,255,255,0.01), transparent);
       }
 
-      /* Login Screen specific */
-      .login-container { max-width: 400px; margin: auto; padding-top: 40px; }
+      .login-container { max-width: 460px; margin: auto; padding-top: 28px; }
       .auth-card {
-        background: var(--surface);
-        padding: 30px;
-        border-radius: 16px;
+        background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+        padding: 28px;
+        border-radius: 14px;
         border: 1px solid var(--border);
-        box-shadow: 0 10px 25px -5px rgba(0,0,0,0.1);
+        box-shadow: 0 10px 30px rgba(2,6,12,0.6);
+      }
+
+      .stMarkdown p, .stMarkdown span, .stText {
+        color: var(--muted);
+      }
+      .st-header {
+        color: var(--text);
       }
     </style>
-    """,
-    unsafe_allow_html=True,
-)
+    """
 
-# ------------------ AUTH page ------------------
+st.markdown(css, unsafe_allow_html=True)
+
+# ------------------ AUTH page ------------------ (same as before)
 def show_auth_page():
     c_side1, c_main, c_side2 = st.columns([1, 1, 1])
     
@@ -672,7 +851,7 @@ def show_auth_page():
                 <div style='text-align:center; margin-bottom:24px;'>
                     <div style='font-size:40px;'></div>
                     <h2 style='margin:0; margin-top:10px;'>LipRead Pro</h2>
-                    <p style='color:#64748B; margin:0;'>Intelligent Lip Reading & Analysis</p>
+                    <p style='color:#94A3B8; margin:0;'>Intelligent Lip Reading & Analysis</p>
                 </div>
             """, 
             unsafe_allow_html=True
@@ -736,6 +915,7 @@ def show_auth_page():
             st.markdown("---")
             with st.expander("Forgot Password?"):
                 fp_user = st.text_input("Enter your username to reset password", key="fp_user")
+                # ---- REPLACED: Request token handler (no SMTP, no token display) ----
                 if st.button("Request password reset token", key="req_token"):
                     if not fp_user:
                         st.warning("Enter username")
@@ -745,20 +925,12 @@ def show_auth_page():
                             st.error("Username not found")
                         else:
                             token = create_password_reset_token(fp_user, expire_minutes=20)
-                            sent = False
-                            email = None
-                            if isinstance(users[fp_user], dict):
-                                email = users[fp_user].get("email", "")
-                            if email:
-                                ok, msg = send_reset_email(email, token)
-                                if ok:
-                                    st.success("Reset token emailed to the address on file.")
-                                    sent = True
-                                else:
-                                    st.error(f"Email failed: {msg}")
-                            if not sent:
-                                st.info("Token (displayed here for local / dev use). Copy and use it in the Reset form below.")
-                                st.code(token)
+                            if not token:
+                                st.error("Failed to create reset token.")
+                            else:
+                                # create_password_reset_token already appends to reset_tokens_fallback.txt
+                                st.success("A password reset token has been created. If you need assistance, contact an administrator.")
+                # ---- END REPLACED BLOCK ----
 
                 st.markdown("### Reset with token")
                 token_input = st.text_input("Reset token", key="reset_token")
@@ -783,6 +955,18 @@ def show_auth_page():
                                 st.success("Password changed. You may now login.")
                             else:
                                 st.error("Failed to reset password.")
+
+                st.markdown("---")
+                st.write("Or request an admin to reset your password (admin will generate a temporary password).")
+                if st.button("Request admin reset", key="req_admin_reset"):
+                    if not fp_user:
+                        st.warning("Enter username above first.")
+                    else:
+                        if request_admin_reset(fp_user):
+                            st.success("Admin reset requested. Please contact an admin to complete the reset.")
+                            st.info("Admin will set a temporary password and you must change it at next login.")
+                        else:
+                            st.error("Failed to request admin reset (username may not exist).")
 
         with tab_signup:
             st.write("")
@@ -830,11 +1014,11 @@ def show_main_page():
     with st.sidebar:
         st.markdown(f"""
         <div class="sidebar-profile-box">
-            <div style="font-size:32px; background:#2563EB; width:60px; height:60px; color:white; border-radius:50%; display:flex; align-items:center; justify-content:center; margin:0 auto 10px auto;">
+            <div style="font-size:32px; background:linear-gradient(135deg,var(--accent),var(--accent-2)); width:70px; height:70px; color:white; border-radius:14px; display:flex; align-items:center; justify-content:center; margin:0 auto 10px auto;">
                 {user_initial}
             </div>
-            <div style="font-weight:700;">{st.session_state.username}</div>
-            <div style="font-size:12px; color:#64748B;">{st.session_state.user_email or 'User'}</div>
+            <div style="font-weight:700; color:var(--text);">{st.session_state.username}</div>
+            <div style="font-size:12px; color:var(--muted);">{st.session_state.user_email or 'User'}</div>
         </div>
         """, unsafe_allow_html=True)
         
@@ -874,7 +1058,7 @@ def show_main_page():
 
             # Admin: Reset user password quick shortcut expander
             with st.expander("Admin: Reset user password"):
-                u_to_reset = st.text_input("Username to reset (admin only)", key="admin_reset_user")
+                u_to_reset = st.text_input("Username to reset ", key="admin_reset_user")
                 temp_pw = st.text_input("Temporary password to set (leave blank to auto generate)", type="password", key="admin_temp_pw")
                 gen_btn_col1, gen_btn_col2 = st.columns([1,1])
                 with gen_btn_col1:
@@ -929,13 +1113,13 @@ def show_main_page():
     st.markdown(
         """
         <div class="app-header">
-          <div class="brand-icon"></div>
+          <div class="brand-icon">LR</div>
           <div style="flex:1">
             <div class="app-title">LipRead Pro</div>
-            <div class="app-sub">AI-Powered Video Speech & Emotion Recognition</div>
+            <div class="app-sub">AI-Powered Video Speech Recognition</div>
           </div>
-          <div style="padding: 4px 12px; background:#F1F5F9; border-radius:6px; color:#64748B; font-size:12px; font-weight:600;">
-             v1.2-Beta
+          <div style="padding: 6px 14px; background:rgba(255,255,255,0.02); border-radius:8px; color:var(--muted); font-size:12px; font-weight:600;">
+             v1.2
           </div>
         </div>
         """,
@@ -1028,7 +1212,6 @@ def show_main_page():
                     column_config={
                         "timestamp": st.column_config.TextColumn("Date/Time"),
                         "prediction": st.column_config.TextColumn("Text"),
-                        "emotion": "Emotion",
                         "translation": "Trans",
                         "video_path": st.column_config.TextColumn("Saved File (Path)")
                     }
@@ -1054,6 +1237,33 @@ def show_main_page():
             save_users(users)
             st.markdown(f"**Total users:** {len(users)}")
             st.write("")
+
+            # New: show pending password-reset requests
+            st.markdown("### 🔔 Password reset requests")
+            pending = get_admin_reset_requests()
+            if not pending:
+                st.info("No pending admin reset requests.")
+            else:
+                for req_user in pending:
+                    cols = st.columns([3,1,1])
+                    with cols[0]:
+                        st.write(f"**{req_user}** requested an admin reset.")
+                    with cols[1]:
+                        if st.button(f"Reset & Show Temp##reset_{req_user}", key=f"reset_show_{req_user}"):
+                            ok, val = admin_reset_user_with_temp_password(req_user)
+                            if ok:
+                                st.success(f"Password reset for {req_user}. Temporary password:")
+                                st.code(val)  # admin copies and shares this with the user
+                            else:
+                                st.error(f"Reset failed: {val}")
+                            st.rerun()
+                    with cols[2]:
+                        if st.button(f"Cancel Request##cancel_{req_user}", key=f"cancel_req_{req_user}"):
+                            clear_admin_reset_request(req_user)
+                            st.success(f"Cleared request for {req_user}")
+                            st.rerun()
+            st.markdown("---")
+
             for uname, uobj in users.items():
                 is_admin_flag = False
                 if isinstance(uobj, dict):
@@ -1066,31 +1276,32 @@ def show_main_page():
                         st.write("Phone:", uobj.get("phone", ""))
                         st.write("DOB:", uobj.get("dob", ""))
                         st.write("History count:", len(uobj.get("history", [])))
+                        st.write("Admin reset requested:", bool(uobj.get("admin_reset_requested", False)))
                     else:
                         st.write("Legacy account (no metadata).")
                     cols = st.columns([1,1,1,1])
                     with cols[0]:
-                        if st.button(f"Promote to admin##{uname}", key=f"prom_{uname}"):
+                        if st.button(f"Promote to admin {uname}", key=f"prom_{uname}"):
                             admin_set_user_flag(uname, "is_admin", True)
                             st.success(f"{uname} promoted to admin.")
-                            st.experimental_rerun()
+                            st.rerun()
                     with cols[1]:
-                        if st.button(f"Demote admin##{uname}", key=f"dem_{uname}"):
+                        if st.button(f"Demote admin  {uname}", key=f"dem_{uname}"):
                             if uname == st.session_state.username:
                                 st.warning("You cannot demote yourself while logged in.")
                             else:
                                 admin_set_user_flag(uname, "is_admin", False)
                                 st.success(f"{uname} demoted.")
-                                st.experimental_rerun()
+                                st.rerun()
                     with cols[2]:
-                        if st.button(f"Clear history##{uname}", key=f"clearhist_{uname}"):
+                        if st.button(f"Clear history  {uname}", key=f"clearhist_{uname}"):
                             if isinstance(users[uname], dict):
                                 users[uname]["history"] = []
                                 save_users(users)
                                 st.success("History cleared.")
-                                st.experimental_rerun()
+                                st.rerun()
                     with cols[3]:
-                        if st.button(f"Delete user##{uname}", key=f"del_{uname}"):
+                        if st.button(f"Delete user  {uname}", key=f"del_{uname}"):
                             st.session_state["_admin_action_confirm"] = {"action": "delete_user", "target": uname}
             st.markdown("</div>", unsafe_allow_html=True)
 
@@ -1117,7 +1328,7 @@ def show_main_page():
                         else:
                             st.error("User not found.")
                         st.session_state["_admin_action_confirm"] = {}
-                        st.experimental_rerun()
+                        st.rerun()
                 with c2:
                     if st.button("Cancel", key="cancel_delete_user"):
                         st.session_state["_admin_action_confirm"] = {}
@@ -1126,10 +1337,27 @@ def show_main_page():
                 st.session_state.view_mode = "app"
                 st.rerun()
 
-    # App tools view (main functionality) - remains unchanged from previous implementation
+    # App tools view (main functionality)
     else:
-        tab1, tab2, tab3, tab4 = st.tabs(["🎥 Prediction Studio", "📂 Model Manager", "🌐 Smart Translator", "📥 Export Results"])
+        # Discover models once
         MODEL_OPTIONS = discover_models()
+
+        # Dynamic tabs: show Model Manager tab only to admins
+        tab_labels = ["🎥 Prediction Studio"]
+        show_model_tab = is_admin_user()
+        if show_model_tab:
+            tab_labels.append("📂 Model Manager")
+        tab_labels += ["🌐 Smart Translator", "📥 Export Results"]
+
+        tabs = st.tabs(tab_labels)
+        # map tab objects
+        tab_index = 0
+        tab1 = tabs[tab_index]; tab_index += 1
+        tab2 = None
+        if show_model_tab:
+            tab2 = tabs[tab_index]; tab_index += 1
+        tab3 = tabs[tab_index]; tab_index += 1
+        tab4 = tabs[tab_index]
 
         # TAB 1: Prediction Studio (same logic)
         with tab1:
@@ -1141,7 +1369,7 @@ def show_main_page():
                 st.markdown("<div class='upload-zone'>", unsafe_allow_html=True)
                 video_file = st.file_uploader("", type=["mp4","avi","mov","mpeg4"], label_visibility="collapsed")
                 if not video_file:
-                     st.markdown("<small style='color:#64748B;'>Drag and drop file here<br>Limit 200MB per file • MP4, AVI, MOV, MPEG4<br>Supported: MP4, AVI, MOV. Max 10s.</small>", unsafe_allow_html=True)
+                     st.markdown("<small style='color:#94A3B8;'>Drag and drop file here<br>Limit 200MB per file • MP4, AVI, MOV, MPEG4<br>Supported: MP4, AVI, MOV. Max 10s.</small>", unsafe_allow_html=True)
                 else:
                     st.caption("✅ File selected: " + video_file.name)
                 st.markdown("</div>", unsafe_allow_html=True)
@@ -1185,11 +1413,7 @@ def show_main_page():
                             preds = loaded_model.predict(input_data)
                             res_label = map_prediction_to_label(preds)
                             
-                            em_txt = "N/A"
-                            if FER_AVAILABLE:
-                                st.write("Detecting emotions...")
-                                em_lab, em_conf = predict_emotion_from_video(temp_vid_path)
-                                em_txt = f"{em_lab} ({int(em_conf*100)}%)" if em_lab != "Unknown" else "Unknown"
+                            # Emotion detection removed; no emotion text
                             
                             tr_txt = "—"
                             if lang_choice != "None":
@@ -1197,12 +1421,16 @@ def show_main_page():
                                 t_val = get_translation(res_label, lang_choice)
                                 if t_val == "Translation not available":
                                     web_try = try_online_translate(res_label, lang_choice)
-                                    if web_try: t_val = web_try + " (Web)"
+                                    if web_try and isinstance(web_try, str) and not web_try.startswith("__ERR__:"):
+                                        t_val = web_try + " (Web)"
+                                    elif web_try and isinstance(web_try, str) and web_try.startswith("__ERR__:"):
+                                        # leave t_val as the offline text (Translation not available) but log
+                                        logging.info(f"Translation API error for '{res_label}' -> {web_try}")
                                 tr_txt = t_val
 
                             st.session_state["_prediction_done"] = True
                             st.session_state["_last_prediction"] = res_label
-                            st.session_state["_last_emotion"] = em_txt
+                            # emotion removed - do not set _last_emotion
                             st.session_state["_last_translation"] = tr_txt
                             
                             usrs = load_users()
@@ -1213,7 +1441,6 @@ def show_main_page():
                                 uobj["history"].insert(0, {
                                     "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                     "prediction": res_label,
-                                    "emotion": em_txt,
                                     "translation": tr_txt,
                                     "video_path": str(permanent_save_path)
                                 })
@@ -1230,72 +1457,103 @@ def show_main_page():
 
                 if st.session_state.get("_prediction_done"):
                     st.divider()
-                    st.success(f"**Speech:** {st.session_state['_last_prediction']}")
-                    r1, r2 = st.columns(2)
-                    with r1:
-                        st.info(f"**Emotion:** {st.session_state['_last_emotion']}")
+
+                    col_speech, col_trans = st.columns([1,1], gap="large")
+
+                    with col_speech:
+                        st.markdown(
+                            f"""
+                            <div style='padding:12px; border-radius:10px; background:#14532d; color:white; font-weight:600;'>
+                                Speech: {st.session_state['_last_prediction']}
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
                         if st.session_state.get("_tts_pred_bytes"):
                             st.audio(st.session_state["_tts_pred_bytes"], format="audio/mp3")
-                    with r2:
-                        st.warning(f"**Transl:** {st.session_state['_last_translation']}")
+
+                    with col_trans:
+                        st.markdown(
+                            f"""
+                            <div style='padding:12px; border-radius:10px; background:#4d4a14; color:white; font-weight:600;'>
+                                Transl: {st.session_state['_last_translation']}
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
                         if st.session_state.get("_tts_trans_bytes"):
                             st.audio(st.session_state["_tts_trans_bytes"], format="audio/mp3")
+
                     if st.button("Start New Analysis", type="secondary"):
                         clear_prediction()
                         st.rerun()
             st.markdown("</div>", unsafe_allow_html=True)
 
-        # TAB 2: Models
-        with tab2:
-            col_m1, col_m2 = st.columns([1, 2])
-            with col_m1:
-                st.markdown("<div class='content-card'>", unsafe_allow_html=True)
-                st.write("##### Upload Model")
-                st.caption("Files (.h5 / .keras)")
-                u_model = st.file_uploader("", type=["h5", "keras"], key="mod_up", label_visibility="collapsed")
-                if u_model:
-                    mp = MODELS_DIR / u_model.name
-                    with open(mp, "wb") as f: f.write(u_model.read())
-                    st.toast("Model Uploaded!", icon="✅")
-                    st.rerun()
-                st.markdown("</div>", unsafe_allow_html=True)
-            with col_m2:
-                st.markdown("<div class='content-card'>", unsafe_allow_html=True)
-                st.write("##### Installed Models")
-                if not MODEL_OPTIONS:
-                    st.warning("No models found in folder.")
-                else:
-                    for k, v in MODEL_OPTIONS.items():
-                        st.code(k)
-                st.markdown("</div>", unsafe_allow_html=True)
+        # TAB 2: Models (only if admin)
+        if tab2 is not None:
+            with tab2:
+                col_m1, col_m2 = st.columns([1, 2])
+                with col_m1:
+                    st.markdown("<div class='content-card'>", unsafe_allow_html=True)
+                    st.write("##### Upload Model")
+                    st.caption("Files (.h5 / .keras)")
+                    u_model = st.file_uploader("", type=["h5", "keras"], key="mod_up", label_visibility="collapsed")
+                    if u_model:
+                        mp = MODELS_DIR / u_model.name
+                        with open(mp, "wb") as f: f.write(u_model.read())
+                        st.toast("Model Uploaded!", icon="✅")
+                        st.rerun()
+                    st.markdown("</div>", unsafe_allow_html=True)
+                with col_m2:
+                    st.markdown("<div class='content-card'>", unsafe_allow_html=True)
+                    st.write("##### Installed Models")
+                    if not MODEL_OPTIONS:
+                        st.warning("No models found in folder.")
+                    else:
+                        for k, v in MODEL_OPTIONS.items():
+                            st.code(k)
+                    st.markdown("</div>", unsafe_allow_html=True)
 
-        # TAB 3: Translator
+        # TAB 3: Translator (API-only manual translation)
         with tab3:
             st.markdown("<div class='content-card'>", unsafe_allow_html=True)
             c_txt, c_opt = st.columns([3, 1])
+
             with c_txt:
                 manual_text = st.text_area("Input Text", height=100)
+
             with c_opt:
                 manual_lang = st.selectbox("Language", list(AVAILABLE_LANGS.keys()), key="man_l")
                 st.write("")
                 if st.button("Translate", use_container_width=True):
-                    if manual_text:
-                        out = get_translation(manual_text, manual_lang)
-                        if out == "Translation not available":
-                            o2 = try_online_translate(manual_text, manual_lang)
-                            if o2: out = o2 + " (Web)"
-                        st.session_state["_last_man_trans"] = out
-                        if TTS_AVAILABLE:
-                            st.session_state["_tts_manual_bytes"] = text_to_speech_bytes(out, AVAILABLE_LANGS[manual_lang])
+                    if not manual_text.strip():
+                        st.warning("Please enter some text to translate.")
+                    else:
+                        api_result = try_online_translate(manual_text, manual_lang)
+
+                        if isinstance(api_result, str) and api_result.startswith("__ERR__:"):
+                            st.session_state["_last_man_trans"] = "Translation Error: " + api_result[8:]
+                            st.session_state["_tts_manual_bytes"] = None
+                        else:
+                            st.session_state["_last_man_trans"] = api_result
+                            lang_code = AVAILABLE_LANGS.get(manual_lang, "en")
+                            if TTS_AVAILABLE:
+                                st.session_state["_tts_manual_bytes"] = text_to_speech_bytes(api_result, lang_code)
+                            else:
+                                st.session_state["_tts_manual_bytes"] = None
+
             if "_last_man_trans" in st.session_state:
                 st.info(f"Result: {st.session_state['_last_man_trans']}")
                 if st.session_state.get("_tts_manual_bytes"):
                     st.audio(st.session_state["_tts_manual_bytes"], format="audio/mp3")
+
             st.divider()
             with st.expander("Add Custom Word to Dictionary"):
                 cx1, cx2, cx3 = st.columns([1, 2, 1])
-                with cx1: cl = st.selectbox("Lang", list(AVAILABLE_LANGS.keys()), key="cl_k")
-                with cx2: ct = st.text_input("Correct Word", key="ct_k")
+                with cx1:
+                    cl = st.selectbox("Lang", list(AVAILABLE_LANGS.keys()), key="cl_k")
+                with cx2:
+                    ct = st.text_input("Correct Word", key="ct_k")
                 with cx3:
                     st.write("")
                     if st.button("Save", use_container_width=True):
@@ -1309,7 +1567,6 @@ def show_main_page():
              st.markdown("<div class='content-card'>", unsafe_allow_html=True)
              st.subheader("Results Export")
              pred_t = st.session_state.get('_last_prediction', '—')
-             emo_t = st.session_state.get('_last_emotion', '—')
              tra_t = st.session_state.get('_last_translation', '—')
              rpt = f"""LipRead Pro Analysis Report
 =============================
@@ -1317,11 +1574,11 @@ Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 User: {st.session_state.username}
 
 Prediction: {pred_t}
-Emotion: {emo_t}
 Translation: {tra_t}
 =============================
 """
              st.text_area("Text Preview", rpt, height=150)
+
              st.write("###### 1. Download Assets")
              col_d1, col_d2, col_d3 = st.columns(3)
              with col_d1:
